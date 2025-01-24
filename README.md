@@ -74,4 +74,5 @@ pip install torchdata PyTDC rdkit-pypi transformers
 pip install wandb
 
 ```
-
+### molecule_coordinates_cache.csv 다운로드 링크
+https://github.com/Jonghwan-dev/TDC_ADMET/blob/main/molecule_coordinates_cache.csv
