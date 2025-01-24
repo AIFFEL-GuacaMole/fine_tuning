@@ -20,7 +20,7 @@ fine_tuning/
 ├── MoE/                            # MoE 방식의 멀티모달 관련 코드
 │   ├── cache/                      # 1D, 2D 변환을 위한 cache 파일
 │   ├── data/                       # TDC data
-│   ├── MoE_Top1.py                 # MoE의 softmax gate baseline code
+│   ├── MoE.py                      # MoE의 softmax gate baseline code
 ```
 
 ## 주요 파일 설명
