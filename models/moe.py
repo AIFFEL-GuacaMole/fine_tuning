@@ -190,6 +190,9 @@ class MoCE(nn.Module):
         self.task_routing = task_routing
 
         if task_routing:
+            if task_routing_sizes is None:
+                task_routing_sizes = input_size
+
             self.h_w_gates = nn.Parameter(torch.zeros(task_routing_sizes, num_experts), requires_grad=True)
             self.h_w_noises = nn.Parameter(torch.zeros(task_routing_sizes, num_experts), requires_grad=True)
 
