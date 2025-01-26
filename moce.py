@@ -161,6 +161,11 @@ if __name__ == "__main__":
     benchmarks = admet_groups.get('CYP2C9_Veith')
     train_val, test = benchmarks['train_val'], benchmarks['test']
 
+    # Split train_val into train and validation datasets
+    train_size = int(0.8 * len(train_val))
+    val_size = len(train_val) - train_size
+    train_data, val_data = torch.utils.data.random_split(train_val, [train_size, val_size])
+
     tokenizer, chemberta_model = load_chemberta_model()
     gin_model = load_gin_model()
     unimol_model = load_unimol_model()
@@ -170,37 +175,40 @@ if __name__ == "__main__":
     input_sizes = [384, 300, 1024]  # Example input sizes
 
     train_chemberta, train_gin, train_unimol, train_labels = load_or_generate_features(
-        "./molecule_coordinates_cache.csv", train_val, batch_size, gin_model, tokenizer, chemberta_model
+        "./molecule_coordinates_cache.csv", train_data, batch_size, gin_model, tokenizer, chemberta_model
+    )
+
+    val_chemberta, val_gin, val_unimol, val_labels = load_or_generate_features(
+        "./molecule_coordinates_cache.csv", val_data, batch_size, gin_model, tokenizer, chemberta_model
     )
 
     test_chemberta, test_gin, test_unimol, test_labels = load_or_generate_features(
         "./molecule_coordinates_cache.csv", test, batch_size, gin_model, tokenizer, chemberta_model
     )
+    
 
     moce = MoCEForMultiModel(input_sizes, output_size=1, hidden_size=512, num_experts=3).to(device)
     optimizer = Adam(moce.parameters(), lr=learning_rate)
     criterion = BCELoss()
 
-    for epoch in range(2000):
+    for epoch in range(200):
+        # Training
         moce.train()
         optimizer.zero_grad()
-        output, train_labels = moce(train_chemberta, train_gin, train_unimol, train_labels)
-        loss = criterion(output, train_labels)
-        loss.backward()
+        train_output, train_labels = moce(train_chemberta, train_gin, train_unimol, train_labels)
+        train_loss = criterion(train_output, train_labels)
+        train_loss.backward()
         optimizer.step()
 
-        print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+        # Compute Train AUPRC
+        train_auprc = compute_auprc(train_labels.cpu().numpy(), train_output.detach().cpu().numpy())
 
-    moce.eval()
-    with torch.no_grad():
-        # 텐서 크기 맞추기
-        min_batch_size = min(test_chemberta.size(0), test_gin.size(0), test_unimol.size(0), test_labels.size(0))
-        test_chemberta = test_chemberta[:min_batch_size]
-        test_gin = test_gin[:min_batch_size]
-        test_unimol = test_unimol[:min_batch_size]
-        test_labels = test_labels[:min_batch_size]
+        # Validation
+        moce.eval()
+        with torch.no_grad():
+            val_output, val_labels = moce(val_chemberta, val_gin, val_unimol, val_labels)
+            val_loss = criterion(val_output, val_labels)
+            val_auprc = compute_auprc(val_labels.cpu().numpy(), val_output.cpu().numpy())
 
-        test_output = moce(test_chemberta, test_gin, test_unimol)
-        auprc = compute_auprc(test_labels.cpu().numpy(), test_output.cpu().numpy())
-        print(f"Test AUPRC: {auprc:.4f}")
+        print(f"Epoch {epoch+1}, Train Loss: {train_loss.item():.4f}, Train AUPRC: {train_auprc:.4f}, Val Loss: {val_loss.item():.4f}, Val AUPRC: {val_auprc:.4f}")
 
