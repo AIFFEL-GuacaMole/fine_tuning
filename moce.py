@@ -13,6 +13,7 @@ from models.moe import MoCE
 import pandas as pd
 import numpy as np
 import os
+import wandb
 
 def enable_gradient_checkpointing(model):
     if isinstance(model, AutoModelForSequenceClassification):
@@ -37,7 +38,7 @@ def extract_chemberta_hidden_states(chemberta_inputs, model):
     return cls_token_embedding
 
 def load_gin_model():
-    model = load_pretrained('gin_supervised_contextpred')
+    model = load_pretrained('gin_supervised_infomax_BACE')
     return model.to(device)
 
 def load_unimol_model():
@@ -45,7 +46,7 @@ def load_unimol_model():
     return model
 
 def prepare_gin_features(smiles_data, gin_model):
-    transformer = PretrainedDGLTransformer(kind='gin_supervised_contextpred')
+    transformer = PretrainedDGLTransformer(kind='gin_supervised_infomax_BACE')
     return transformer(smiles_data)
 
 def load_or_generate_features(file_path_3d, data, batch_size, gin_model, tokenizer, chemberta_model):
@@ -117,8 +118,7 @@ class MoCEForMultiModel(MoCE):
 
         self.output_layer = nn.Linear(hidden_size, 1)
 
-    def forward(self, chemberta_output, gin_output, unimol_output,train_labels= None):
-
+    def forward(self, chemberta_output, gin_output, unimol_output, train_labels=None):
         # 데이터 타입 강제 변환
         chemberta_output = chemberta_output.float()
         gin_output = gin_output.float()
@@ -137,11 +137,20 @@ class MoCEForMultiModel(MoCE):
         gin_projected = self.gin_mlp(gin_output)                    # (batch_size, hidden_size)
         unimol_projected = self.unimol_mlp(unimol_output)           # (batch_size, hidden_size)
 
+        # Experts 수에 따라 텐서 개수를 일치시킴
+        num_experts = len([chemberta_projected, gin_projected, unimol_projected])
+       
         # MoCE 로직 수행
+        ## k 값 
+        ## routing 시각화 
+        ## 여러 모델을 사용해보기 
+        ## gin informax 모델이 성능 잘나와서 이거 사용해보기  
         gates, _, _ = self.noisy_top_k_gating(chemberta_projected, self.training)
         combined_result = torch.sum(
             torch.stack([chemberta_projected, gin_projected, unimol_projected], dim=1) * gates.unsqueeze(-1), dim=1
         )
+        
+
         # Output Layer를 통해 최종 출력 계산
         output = self.output_layer(combined_result)  # (batch_size, 1)
 
@@ -156,59 +165,134 @@ def compute_auprc(y_true, y_pred):
     precision, recall, _ = precision_recall_curve(y_true, y_pred)
     return auc(recall, precision)
 
+
+
 if __name__ == "__main__":
-    admet_groups = admet_group(path='data/')
-    benchmarks = admet_groups.get('CYP2C9_Veith')
-    train_val, test = benchmarks['train_val'], benchmarks['test']
+    # WandB sweep configuration
+    sweep_config = {
+        "method": "bayes",  # Bayes optimization
+        "metric": {"name": "val_auprc", "goal": "maximize"},
+        "parameters": {
+            "learning_rate": {"min": 1e-5, "max": 1e-3},
+            "batch_size": {"values": [ 32]},
+            "hidden_size": {"values": [256, 512, 1024]},
+            "num_experts": {"values": [ 3]},
+            "dropout": {"min": 0.3, "max": 0.6},
+            "epochs": {"values": [50, 100]},
+            "optimizer": {"values": ["adam", "sgd"]},
+            "weight_decay": {"min": 1e-6, "max": 1e-3},
+        },
+    }
 
-    # Split train_val into train and validation datasets
-    train_size = int(0.8 * len(train_val))
-    val_size = len(train_val) - train_size
-    train_data, val_data = torch.utils.data.random_split(train_val, [train_size, val_size])
+    sweep_id = wandb.sweep(sweep_config, project="moce-hyperparameter-tuning")
 
-    tokenizer, chemberta_model = load_chemberta_model()
-    gin_model = load_gin_model()
-    unimol_model = load_unimol_model()
+    def train():
+        # Initialize WandB run
+        wandb.init()
 
-    batch_size = 32
-    learning_rate = 1e-4
-    input_sizes = [384, 300, 1024]  # Example input sizes
+        config = wandb.config
 
-    train_chemberta, train_gin, train_unimol, train_labels = load_or_generate_features(
-        "./molecule_coordinates_cache.csv", train_data, batch_size, gin_model, tokenizer, chemberta_model
-    )
+        admet_groups = admet_group(path='data/')
+        benchmarks = admet_groups.get('CYP2D6_Veith')
+        train_val, test = benchmarks['train_val'], benchmarks['test']
 
-    val_chemberta, val_gin, val_unimol, val_labels = load_or_generate_features(
-        "./molecule_coordinates_cache.csv", val_data, batch_size, gin_model, tokenizer, chemberta_model
-    )
+        # Split train_val into train and validation datasets
+        train_size = int(0.7 * len(train_val))
+        val_size = len(train_val) - train_size
+        train_data, val_data = torch.utils.data.random_split(train_val, [train_size, val_size])
 
-    test_chemberta, test_gin, test_unimol, test_labels = load_or_generate_features(
-        "./molecule_coordinates_cache.csv", test, batch_size, gin_model, tokenizer, chemberta_model
-    )
-    
+        tokenizer, chemberta_model = load_chemberta_model()
+        gin_model = load_gin_model()
+        unimol_model = load_unimol_model()
 
-    moce = MoCEForMultiModel(input_sizes, output_size=1, hidden_size=512, num_experts=3).to(device)
-    optimizer = Adam(moce.parameters(), lr=learning_rate)
-    criterion = BCELoss()
+        train_chemberta, train_gin, train_unimol, train_labels = load_or_generate_features(
+            "./molecule_coordinates_cache.csv", train_data, config.batch_size, gin_model, tokenizer, chemberta_model
+        )
 
-    for epoch in range(200):
-        # Training
-        moce.train()
-        optimizer.zero_grad()
-        train_output, train_labels = moce(train_chemberta, train_gin, train_unimol, train_labels)
-        train_loss = criterion(train_output, train_labels)
-        train_loss.backward()
-        optimizer.step()
+        val_chemberta, val_gin, val_unimol, val_labels = load_or_generate_features(
+            "./molecule_coordinates_cache.csv", val_data, config.batch_size, gin_model, tokenizer, chemberta_model
+        )
 
-        # Compute Train AUPRC
-        train_auprc = compute_auprc(train_labels.cpu().numpy(), train_output.detach().cpu().numpy())
+        test_chemberta, test_gin, test_unimol, test_labels = load_or_generate_features(
+             "./molecule_coordinates_cache.csv", test, config.batch_size, gin_model, tokenizer, chemberta_model
+        )
 
-        # Validation
+        moce = MoCEForMultiModel(
+            input_sizes=[384, 300, 1024],
+            output_size=1,
+            hidden_size=config.hidden_size,
+            num_experts=config.num_experts,
+            dropout=config.dropout
+        ).to(device)
+
+        if config.optimizer == "adam":
+            optimizer = Adam(moce.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+        elif config.optimizer == "sgd":
+            optimizer = torch.optim.SGD(moce.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+
+        criterion = BCELoss()
+
+        # Early stopping setup
+        patience = 5
+        best_val_loss = float('inf')
+        patience_counter = 0
+
+        for epoch in range(config.epochs):
+            # Training phase
+            moce.train()
+            optimizer.zero_grad()
+            train_output, train_labels = moce(train_chemberta, train_gin, train_unimol, train_labels)
+            train_loss = criterion(train_output, train_labels)
+            train_loss.backward()
+            optimizer.step()
+
+            # Validation phase
+            with torch.no_grad():
+                val_output, val_labels = moce(val_chemberta, val_gin, val_unimol, val_labels)
+                val_loss = criterion(val_output, val_labels).item()
+                train_auprc = compute_auprc(train_labels.cpu().numpy(), train_output.cpu().numpy())
+                val_auprc = compute_auprc(val_labels.cpu().numpy(), val_output.cpu().numpy())
+
+            # Log metrics to WandB
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": train_loss.item(),
+                "val_loss": val_loss,
+                "train_auprc": train_auprc,
+                "val_auprc": val_auprc
+            })
+
+            # Early stopping check
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch + 1}")
+                break
+
+        # Test 
         moce.eval()
         with torch.no_grad():
-            val_output, val_labels = moce(val_chemberta, val_gin, val_unimol, val_labels)
-            val_loss = criterion(val_output, val_labels)
-            val_auprc = compute_auprc(val_labels.cpu().numpy(), val_output.cpu().numpy())
+            min_batch_size = min(test_chemberta.size(0), test_gin.size(0), test_unimol.size(0), test_labels.size(0))
+            test_chemberta = test_chemberta[:min_batch_size]
+            test_gin = test_gin[:min_batch_size]
+            test_unimol = test_unimol[:min_batch_size]
+            test_labels = test_labels[:min_batch_size]
+            print('min_batch_size', min_batch_size)
+            test_output  = moce(test_chemberta, test_gin, test_unimol)
+            test_auprc = compute_auprc(test_labels.cpu().numpy(), test_output.cpu().numpy())
+            unique_labels = torch.unique(test_labels)
+            print(f"Unique labels in test_labels: {unique_labels}")
 
-        print(f"Epoch {epoch+1}, Train Loss: {train_loss.item():.4f}, Train AUPRC: {train_auprc:.4f}, Val Loss: {val_loss.item():.4f}, Val AUPRC: {val_auprc:.4f}")
+            wandb.log({
+                "test_auprc": test_auprc
+            })
+
+            print(f"Test AUPRC: {test_auprc:.4f}")
+
+    # Start the sweep
+    wandb.agent(sweep_id, function=train)
 
