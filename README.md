@@ -48,7 +48,16 @@ fine_tuning/
 Python 3.9
 
 ```
+python3 chemberta.py
+python3 gin_supervised_contextpred.py
+python3 gps_finetuning.py
+python3 fine_tuning3D.py
+python3 unimol.py
+python3 data_transformation.py
 
+```
+
+```
 conda install pytorch-cluster -c pyg
 conda install -c dglteam/label/th24_cu124 dgl
 
