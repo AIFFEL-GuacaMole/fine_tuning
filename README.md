@@ -17,10 +17,6 @@ fine_tuning/
 │   │       ├── best_model.pth      # SchNet의 최적 파라미터가 저장된 파일
 │   ├── fine_tuning3D.py            # 3D 구조 기반 파인튜닝 메인 스크립트
 │   ├── unimol.py                   # Uni-Mol 모델을 사용한 파인튜닝 코드
-├── MoE/                            # MoE 방식의 멀티모달 관련 코드
-│   ├── cache/                      # 1D, 2D 변환을 위한 cache 파일
-│   ├── data/                       # TDC data
-│   ├── MoE.py                      # MoE의 softmax gate baseline code
 ```
 
 ## 주요 파일 설명
@@ -45,9 +41,6 @@ fine_tuning/
 
 ### **`unimol.py`**
 - **역할:** Uni-Mol 모델을 사용한 3D 분자 구조 학습 스크립트입니다.
-
-### **`MoE.py`**
-- **역할:** MoE의 Softmax gate를 이용한 학습 코드입니다.
 
 
 ## Environment
